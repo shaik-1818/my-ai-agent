@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Agent Approval Test</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px #ddd;
+        }
+
+        input, button {
+            display: block;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 12px;
+            margin: 12px 0;
+            font-size: 16px;
+        }
+
+        button {
+            background: #654cf0;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            background: #eee;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h1>Approval Workflow Test</h1>
+
+        <p>Test input:</p>
+
+        <input
+            id="username"
+            type="text"
+            placeholder="Enter test username"
+        >
+
+        <p>Clicking this button requires agent approval:</p>
+
+        <button
+            id="login-btn"
+            type="button"
+            onclick="handleTestClick()"
+        >
+            Login
+        </button>
+
+        <div id="result">
+            Waiting — button has not been clicked.
+        </div>
+    </div>
+
+    <script>
+        function handleTestClick() {
+            const username =
+                document.getElementById("username").value || "(empty)";
+
+            document.getElementById("result").textContent =
+                "TEST BUTTON WAS CLICKED. Username: " + username;
+        }
+    </script>
+</body>
+</html>

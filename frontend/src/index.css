@@ -1,0 +1,73 @@
+@import '@fontsource/dm-sans/400.css';
+@import '@fontsource/dm-sans/500.css';
+@import '@fontsource/dm-sans/600.css';
+
+/* ── Design tokens ─────────────────────────────────────────── */
+:root {
+  /* surfaces */
+  --bg:           #0d0e14;
+  --surface:      #13141c;
+  --surface-2:    #1a1b26;
+  --surface-3:    #21222f;
+  --border:       #2a2b3d;
+  --border-soft:  #1f2030;
+
+  /* text */
+  --text:         #a9adc1;
+  --text-dim:     #5c6080;
+  --text-h:       #e2e4f0;
+  --text-bright:  #f0f2ff;
+
+  /* accent – violet */
+  --accent:       #7c6af7;
+  --accent-dim:   rgba(124, 106, 247, 0.15);
+  --accent-glow:  rgba(124, 106, 247, 0.35);
+  --accent-hover: #9585f9;
+
+  /* status */
+  --green:        #34d399;
+  --green-dim:    rgba(52, 211, 153, 0.12);
+  --red:          #f87171;
+  --red-dim:      rgba(248, 113, 113, 0.12);
+  --yellow:       #fbbf24;
+  --yellow-dim:   rgba(251, 191, 36, 0.12);
+  --blue:         #60a5fa;
+  --blue-dim:     rgba(96, 165, 250, 0.12);
+
+  /* layout */
+  --sidebar-w:    260px;
+  --radius:       10px;
+  --radius-sm:    6px;
+
+  /* type */
+  --sans: 'DM Sans', system-ui, sans-serif;
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+}
+
+/* ── Reset ─────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { min-height: 100svh; overflow-x: hidden; }
+button { font-family: inherit; cursor: pointer; }
+textarea, input { font-family: inherit; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); }
+
+/* ── Root shell ────────────────────────────────────────────── */
+#root {
+  display: flex;
+  min-height: 100svh;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }

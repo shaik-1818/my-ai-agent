@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Local Coding Workflow Mock</title>
+</head>
+<body>
+    <main>
+        <h1>Sum a List</h1>
+        <p id="problem-statement">
+            Given a list of integers named input_data, return the sum of all values.
+            The empty list must return 0.
+        </p>
+        <h2>Example</h2>
+        <pre>input: [1, 2, 3]
+output: 6</pre>
+        <h2>Constraints</h2>
+        <p>Input values are integers. The list may be empty.</p>
+        <label for="language">Language</label>
+        <select id="language" name="language">
+            <option value="Python">Python</option>
+        </select>
+        <label for="code-editor">Code editor</label>
+        <textarea id="code-editor" name="code" aria-label="Code editor" rows="10" cols="60"></textarea>
+        <button id="run-tests" type="button">Run Tests</button>
+        <button id="submit-solution" type="button">Submit Solution</button>
+        <p id="test-result" role="status" aria-live="polite">Not run</p>
+        <output id="run-count">0</output>
+        <output id="submit-count">0</output>
+    </main>
+    <script>
+        const editor = document.getElementById("code-editor");
+        const result = document.getElementById("test-result");
+        const runCount = document.getElementById("run-count");
+        const submitCount = document.getElementById("submit-count");
+
+        document.getElementById("run-tests").addEventListener("click", () => {
+            runCount.value = String(Number(runCount.value) + 1);
+            runCount.textContent = runCount.value;
+            if (editor.value.includes("sum(input_data)")) {
+                result.textContent = "Accepted. All tests passed.";
+            } else {
+                result.textContent = "Wrong Answer: expected 6, received 1.";
+            }
+        });
+
+        document.getElementById("submit-solution").addEventListener("click", () => {
+            submitCount.value = String(Number(submitCount.value) + 1);
+            submitCount.textContent = submitCount.value;
+            result.textContent = "Submission received.";
+        });
+    </script>
+</body>
+</html>

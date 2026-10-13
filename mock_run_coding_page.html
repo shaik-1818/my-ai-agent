@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Local Run/Test Workflow Mock</title>
+</head>
+<body>
+    <main>
+        <h1>Sum a List</h1>
+        <p>Given an integer n, return the sum of all integers from 1 to n. For legacy mock coverage, a list of integers named input_data should return the sum of all values.</p>
+        <label for="code-editor">Solution code editor</label>
+        <textarea id="code-editor" aria-label="Code editor"></textarea>
+        <button id="run-tests" type="button" aria-label="Run tests">Run Tests</button>
+        <button id="submit-solution" type="button">Submit Solution</button>
+        <div id="test-result" role="status" aria-live="polite">Not run</div>
+        <output id="run-count">0</output>
+        <output id="submit-count">0</output>
+    </main>
+    <script>
+        const editor = document.getElementById("code-editor");
+        const result = document.getElementById("test-result");
+        const runCount = document.getElementById("run-count");
+        const submitCount = document.getElementById("submit-count");
+        const query = new URLSearchParams(window.location.search);
+
+        if (query.get("block") === "1") {
+            document.querySelector("h1").textContent = "Access denied";
+        }
+        if (query.get("login") === "1") {
+            const loginMessage = document.createElement("p");
+            loginMessage.textContent = "You need to log in / sign up to run or submit";
+            document.body.appendChild(loginMessage);
+        }
+        if (query.get("login-late") === "1") {
+            const spacer = document.createElement("p");
+            spacer.textContent = "x".repeat(4500);
+            document.body.appendChild(spacer);
+            const loginMessage = document.createElement("p");
+            loginMessage.textContent = "You need to log in / sign up to run or submit";
+            document.body.appendChild(loginMessage);
+        }
+        if (query.get("security") === "1") {
+            const securityMessage = document.createElement("p");
+            securityMessage.textContent = "Cloudflare security check";
+            document.body.appendChild(securityMessage);
+        }
+        if (query.get("no-editor") === "1") {
+            editor.hidden = true;
+        }
+        if (query.get("no-run") === "1") {
+            document.getElementById("run-tests").hidden = true;
+        }
+
+        document.getElementById("run-tests").addEventListener("click", () => {
+            runCount.textContent = String(Number(runCount.textContent) + 1);
+            if (query.get("unknown") === "1") {
+                result.textContent = "Execution started.";
+            } else if (query.get("correction") === "1" || query.get("integrated") === "1") {
+                if (editor.value.includes("MOCK_MEMORY_ERROR")) {
+                    result.textContent = "Memory Limit Exceeded";
+                } else if (editor.value.includes("COMPILE_ERROR")) {
+                    result.textContent = "Compilation Error: mock syntax failure";
+                } else if (editor.value.includes("raise RuntimeError") || editor.value.includes("MOCK_RUNTIME_ERROR")) {
+                    result.textContent = "Runtime Error: mock exception";
+                } else if (editor.value.includes("MOCK_TIMEOUT") || editor.value.includes("while True")) {
+                    result.textContent = "Time Limit Exceeded";
+                } else if (editor.value.includes("sum(range(1, n + 1))")) {
+                    result.textContent = "All tests passed";
+                } else if (editor.value.includes("return n + 1")) {
+                    result.textContent = "Wrong Answer\nExpected: 15\nActual: 6";
+                } else if (editor.value.includes("return n + 2")) {
+                    result.textContent = "Wrong Answer\nExpected: 15\nActual: 7";
+                } else if (editor.value.includes("return n + 3")) {
+                    result.textContent = "Wrong Answer\nExpected: 15\nActual: 8";
+                } else if (editor.value.includes("return n")) {
+                    result.textContent = "Wrong Answer\nExpected: 15\nActual: 5";
+                } else if (editor.value.includes("return sum(input_data)")) {
+                    result.textContent = "Passed. All tests passed.";
+                } else {
+                    result.textContent = "Wrong Answer\nExpected: 15\nActual: 0";
+                }
+            } else if (editor.value.includes("MOCK_TIMEOUT") || editor.value.includes("while True")) {
+                result.textContent = "Time Limit Exceeded";
+            } else if (editor.value.includes("raise RuntimeError") || editor.value.includes("MOCK_RUNTIME_ERROR")) {
+                result.textContent = "Runtime Error: mock exception";
+            } else if (editor.value.includes("return sum(input_data)")) {
+                result.textContent = "Passed. All tests passed.";
+            } else {
+                result.textContent = "Wrong Answer: expected 6, received 1.";
+            }
+        });
+
+        document.getElementById("submit-solution").addEventListener("click", () => {
+            submitCount.textContent = String(Number(submitCount.textContent) + 1);
+        });
+    </script>
+</body>
+</html>

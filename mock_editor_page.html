@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Local Code Editor Mock</title>
+</head>
+<body>
+    <main>
+        <h1>Sum a List</h1>
+        <p>Given a list of integers named input_data, return the sum of all values.</p>
+        <label for="code-editor">Solution code editor</label>
+        <textarea id="code-editor" data-testid="solution-editor" aria-label="Code editor">PRIVATE_EDITOR_DRAFT_123</textarea>
+        <button id="run-button" type="button">Run</button>
+        <button id="submit-button" type="button">Submit</button>
+        <output id="run-count">0</output>
+        <output id="submit-count">0</output>
+    </main>
+    <script>
+        document.getElementById("run-button").addEventListener("click", () => {
+            const count = document.getElementById("run-count");
+            count.textContent = String(Number(count.textContent) + 1);
+        });
+        document.getElementById("submit-button").addEventListener("click", () => {
+            const count = document.getElementById("submit-count");
+            count.textContent = String(Number(count.textContent) + 1);
+        });
+    </script>
+</body>
+</html>

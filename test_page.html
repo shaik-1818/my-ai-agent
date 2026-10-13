@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>AI Agent Test</title>
+</head>
+
+<body>
+
+    <h1>AI Computer Agent Test</h1>
+
+    <p>Enter your name:</p>
+
+    <input
+        id="name"
+        type="text"
+        placeholder="Enter your name"
+    >
+
+    <button
+        id="submit"
+        onclick="showMessage()"
+    >
+        Submit
+    </button>
+
+    <h2 id="result"></h2>
+
+    <script>
+
+        const nameInput = document.getElementById("name");
+        const result = document.getElementById("result");
+
+        nameInput.addEventListener("keydown", function(event) {
+            if (event.key === "Enter") {
+                result.innerText = "ENTER PRESSED";
+            }
+            if (event.key === "Escape") {
+                result.innerText = "ESC PRESSED";
+            }
+            if (event.key === "ArrowDown") {
+                result.innerText = "ARROW DOWN";
+            }
+        });
+
+        function showMessage() {
+
+            const name =
+                document.getElementById("name").value;
+
+            document.getElementById("result").innerText =
+                "Hello " + name + "!";
+
+        }
+
+    </script>
+
+</body>
+
+</html>
