@@ -87,6 +87,11 @@ def safe_observation(observation):
     return {
         "title": _redact_text(observation.get("page_title") or observation.get("title", "")),
         "body_text": _redact_text(observation.get("body_text", ""))[:10000],
+        "inputs": [
+            safe
+            for safe in (_safe_element(item, include_value=True) for item in observation.get("inputs", []))
+            if safe is not None
+        ],
         "buttons": [
             safe
             for safe in (_safe_element(item) for item in observation.get("buttons", []))
@@ -101,6 +106,16 @@ def safe_observation(observation):
             safe
             for safe in (_safe_element(item, include_value=True) for item in observation.get("selects", []))
             if safe is not None
+        ],
+        "elements": [
+            {
+                "id": el.get("id"),
+                "selector": el.get("selector"),
+                "tag": el.get("tag"),
+                "text": _redact_text(el.get("text", "")),
+            }
+            for el in observation.get("elements", [])
+            if el.get("id") and not SENSITIVE_FIELD_PATTERN.search(el.get("id", ""))
         ],
     }
 

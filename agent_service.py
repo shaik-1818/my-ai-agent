@@ -223,15 +223,47 @@ def _read_page_safely(page):
 
 
 def _observed_target(observation, selector, categories):
-    return next(
-        (
-            item
-            for category in categories
-            for item in observation.get(category, [])
-            if item.get("selector") == selector
-        ),
-        None,
-    )
+    if not selector:
+        return None
+    sel_clean = str(selector).strip()
+
+    # 1. Exact match on selector
+    for category in categories:
+        for item in observation.get(category, []):
+            if item.get("selector") == sel_clean:
+                return item
+
+    # 2. Match by id (#id or id)
+    for category in categories:
+        for item in observation.get(category, []):
+            item_id = item.get("id", "").strip()
+            if item_id and (sel_clean == f"#{item_id}" or sel_clean == item_id or sel_clean.endswith(f"#{item_id}")):
+                return item
+
+    # 3. Match by selector suffix or prefix (e.g. button#showName or #showName)
+    for category in categories:
+        for item in observation.get(category, []):
+            item_sel = item.get("selector", "").strip()
+            if item_sel and (sel_clean.endswith(item_sel) or item_sel.endswith(sel_clean)):
+                return item
+
+    # 4. Match by text (case-insensitive)
+    for category in categories:
+        for item in observation.get(category, []):
+            item_text = (item.get("text") or "").strip().lower()
+            if item_text and (sel_clean.lower() == item_text or sel_clean.lower() in item_text or item_text in sel_clean.lower()):
+                return item
+
+    # 5. If only a single candidate exists across the requested categories, fall back to it
+    all_items = [
+        item
+        for category in categories
+        for item in observation.get(category, [])
+    ]
+    if len(all_items) == 1:
+        return all_items[0]
+
+    return None
 
 
 def _target_is_sensitive(target):
@@ -261,9 +293,20 @@ def _simple_read_task_completed(user_task: str, observation: dict[str, Any]) -> 
     browser_read for tasks whose answer is already available.
     """
     task = str(user_task or "").strip().lower()
-        # Do not finish early when the task requires multiple websites.
     import re
 
+    # Navigation alone cannot count as successful completion when interaction was requested.
+    interaction_patterns = [
+        r"\bclick\b", r"\btype\b", r"\benter\b", r"\bfill\b", r"\bpress\b",
+        r"\bsubmit\b", r"\bselect\b", r"\bcheck\b", r"\buncheck\b",
+        r"\bbutton\b", r"\binput\b", r"\bform\b", r"#[a-zA-Z0-9_-]+",
+        r"\bverify\b", r"\bassert\b", r"\bresult\b", r"\btest\b",
+        r"\blogin\b", r"\bsignin\b", r"\bsearch\b",
+    ]
+    if any(re.search(pat, task) for pat in interaction_patterns):
+        return False
+
+    # Do not finish early when the task requires multiple websites.
     website_count = len(
         re.findall(r"https?://", str(user_task or ""), re.IGNORECASE)
     )
@@ -603,6 +646,122 @@ def _verify_browser_task(
         return False, "Verification could not be completed due to a model error."
 
 
+def _inspect_and_verify_result(
+    task: str,
+    observation: dict[str, Any],
+    page=None,
+) -> tuple[bool, bool, str, str, str]:
+    """
+    Inspects DOM for verification targets specified in the task (e.g. #result).
+    Returns (is_verification_task, matches, observed_text, expected_text, target_selector).
+    """
+    if not task:
+        return False, False, "", "", "#result"
+
+    task_str = str(task).strip()
+    import re
+
+    # Check if task requests verification
+    if not re.search(r"\b(verify|check|assert|inspect|equals?)\b", task_str, re.IGNORECASE):
+        return False, False, "", "", "#result"
+
+    # 1. Identify target selector and ID
+    target_selector = None
+    target_id = None
+
+    selectors = re.findall(r"#([a-zA-Z0-9_-]+)", task_str)
+    for sel in selectors:
+        sel_lower = sel.lower()
+        if any(keyword in sel_lower for keyword in ("result", "output", "message", "greeting", "text")):
+            target_selector = f"#{sel}"
+            target_id = sel
+            break
+
+    if not target_selector and selectors:
+        input_selectors = {
+            item.get("selector", "").lstrip("#")
+            for item in observation.get("inputs", [])
+        }
+        button_selectors = {
+            item.get("selector", "").lstrip("#")
+            for item in observation.get("buttons", [])
+        }
+        for sel in selectors:
+            if sel not in input_selectors and sel not in button_selectors:
+                target_selector = f"#{sel}"
+                target_id = sel
+                break
+
+    if not target_selector and re.search(r"\bresult\b", task_str, re.IGNORECASE):
+        target_selector = "#result"
+        target_id = "result"
+
+    if not target_selector:
+        for el in observation.get("elements", []):
+            el_id = el.get("id", "")
+            if el_id and el_id.lower() == "result":
+                target_selector = f"#{el_id}"
+                target_id = el_id
+                break
+
+    if not target_selector:
+        target_selector = "#result"
+        target_id = "result"
+
+    # 2. Extract expected text
+    expected_text = ""
+    m_q = re.search(
+        r'(?:verify|check|assert|equals?|result)[^"\'\n\r]*(?:the\s+exact\s+text\s*)?["\']([^"\']+)["\']',
+        task_str,
+        re.IGNORECASE,
+    )
+    if m_q:
+        expected_text = m_q.group(1).strip()
+    else:
+        m_u = re.search(
+            r'(?:verify|check|assert|equals?)\s+(?:the\s+exact\s+(?:text|value)\s+)?(?:that\s+)?(?:#?\w+\s+(?:is|equals?|to be)\s+)?([^\n\r]+)',
+            task_str,
+            re.IGNORECASE,
+        )
+        if m_u:
+            expected_candidate = m_u.group(1).strip()
+            if expected_candidate.endswith(".") and not expected_candidate.endswith(".."):
+                expected_candidate = expected_candidate[:-1].strip()
+            expected_candidate = expected_candidate.strip("\"'")
+            expected_text = expected_candidate
+
+    if not expected_text:
+        return False, False, "", "", target_selector
+
+    # 3. Read observed text from DOM / observation
+    observed_text = ""
+    if page and target_selector:
+        try:
+            loc = page.locator(target_selector)
+            if loc.count() > 0:
+                observed_text = loc.first.inner_text(timeout=1000).strip()
+        except Exception:
+            observed_text = ""
+
+    if not observed_text and target_id:
+        for el in observation.get("elements", []):
+            if el.get("id") == target_id or el.get("selector") == target_selector:
+                observed_text = str(el.get("text", "")).strip()
+                break
+
+    if not observed_text and page:
+        try:
+            body = page.locator("body").inner_text(timeout=1000).strip()
+            if expected_text in body:
+                observed_text = expected_text
+        except Exception:
+            pass
+
+    matches = (observed_text == expected_text)
+    return True, matches, observed_text, expected_text, target_selector
+
+
+
 def _run_computer_workflow(
     task_request: TaskRequest,
     emit: EventCallback,
@@ -635,6 +794,24 @@ def _run_computer_workflow(
                 _validate_url(task_request.url)
                 opened = browser_open(page, task_request.url)
                 page_opened = bool(opened.get("success"))
+                if not page_opened:
+                    error_msg = opened.get("error", f"Failed to open {task_request.url}")
+                    _emit(
+                        emit,
+                        TaskEventType.TASK_FAILED,
+                        TaskStatus.FAILED,
+                        f"Failed to open URL: {error_msg}",
+                        {"url": task_request.url, "error": error_msg},
+                    )
+                    return {
+                        "success": False,
+                        "verified": False,
+                        "state": "FAILED",
+                        "summary": f"Failed to open URL: {error_msg}",
+                        "url": task_request.url,
+                        "error": error_msg,
+                        "steps": 0,
+                    }
                 last_action = "browser_open"
                 _emit(
                     emit,
@@ -663,6 +840,7 @@ def _run_computer_workflow(
             last_thinking_action = None
             verify_attempts = 0
             finish_rejected_count = 0
+            clicked_selectors: set[str] = set()
             for step in range(1, MAX_COMPUTER_STEPS + 1):
                 _emit(
                     emit,
@@ -750,7 +928,10 @@ def _run_computer_workflow(
 
                 if page_opened and last_action == "browser_open" and action_name != "browser_read":
                     action_name = "browser_read"
-                elif action_name == "finish":
+                elif last_action == "browser_type" and action_name == "browser_type":
+                    action_name = "browser_read"
+
+                if action_name == "finish":
                     reason = sanitize_event_text(action.get("reason", "")).strip()
                     print("\n========== AGENT FINISH DEBUG ==========")
                     print("Task:", task_request.task)
@@ -792,6 +973,57 @@ def _run_computer_workflow(
                         last_action = "finish_rejected"
                         continue
                     # --- Post-completion verification ---
+                    dom_is_verif, dom_matches, dom_obs_text, dom_exp_text, dom_target_sel = _inspect_and_verify_result(
+                        task_request.task, observation if 'observation' in locals() else {}, page if page_opened else None
+                    )
+                    if dom_is_verif and not dom_matches:
+                        dom_obs_msg = f"Observed {dom_target_sel} text is '{dom_obs_text}' (expected '{dom_exp_text}')."
+                        finish_rejected_count += 1
+                        if finish_rejected_count >= MAX_FINISH_REJECTIONS:
+                            return {
+                                "success": False,
+                                "verified": False,
+                                "state": "FAILED",
+                                "summary": f"Task stopped: DOM verification failed ({dom_obs_msg}).",
+                                "url": page.url if page_opened else None,
+                                "steps": step,
+                            }
+                        _emit(
+                            emit,
+                            TaskEventType.THINKING,
+                            TaskStatus.RUNNING,
+                            f"Verification failed: {dom_obs_msg}; continuing task.",
+                            {"selector": dom_target_sel, "observed": dom_obs_text, "expected": dom_exp_text},
+                        )
+                        observation_text = (
+                            f"{observation_text}\n\n"
+                            f"VERIFICATION FAILED: {dom_obs_msg}\n"
+                            "Review the observation and take further actions "
+                            "to fully complete the task before finishing."
+                        )
+                        last_action = "finish_rejected"
+                        continue
+                    elif dom_is_verif and dom_matches:
+                        _emit(
+                            emit,
+                            TaskEventType.THINKING,
+                            TaskStatus.RUNNING,
+                            f"Verification passed: {dom_target_sel} matches '{dom_obs_text}'",
+                            {"verified": True, "selector": dom_target_sel, "value": dom_obs_text},
+                        )
+                        return {
+                            "success": True,
+                            "verified": True,
+                            "state": "VERIFIED",
+                            "summary": reason or f"Observed {dom_target_sel} with text: '{dom_obs_text}'.",
+                            "url": page.url if page_opened else None,
+                            "steps": step,
+                            "result": {
+                                "selector": dom_target_sel,
+                                "text": dom_obs_text,
+                            },
+                        }
+
                     if verify_attempts < MAX_VERIFY_ATTEMPTS:
                         verify_attempts += 1
                         passed, feedback = _verify_browser_task(
@@ -806,7 +1038,7 @@ def _run_computer_workflow(
                                     "state": "FAILED",
                                     "summary": (
                                         f"Task stopped: finish was rejected {finish_rejected_count} times "
-                                        "(verification never passed)."
+                                        f"(verification never passed: {feedback})."
                                     ),
                                     "url": page.url if page_opened else None,
                                     "steps": step,
@@ -815,7 +1047,7 @@ def _run_computer_workflow(
                                 emit,
                                 TaskEventType.THINKING,
                                 TaskStatus.RUNNING,
-                                "Verification failed; continuing task.",
+                                f"Verification failed: {feedback}; continuing task.",
                                 {"feedback": feedback},
                             )
                             observation_text = (
@@ -826,11 +1058,30 @@ def _run_computer_workflow(
                             )
                             last_action = "finish_rejected"
                             continue
-                    # Verification passed or attempts exhausted — accept finish.
+                        else:
+                            _emit(
+                                emit,
+                                TaskEventType.THINKING,
+                                TaskStatus.RUNNING,
+                                f"Verification passed: {feedback}",
+                                {"verified": True, "feedback": feedback},
+                            )
+
+                    if verify_attempts > 0 and not passed:
+                        return {
+                            "success": False,
+                            "verified": False,
+                            "state": "FAILED",
+                            "summary": f"Task verification failed: {feedback}",
+                            "url": page.url if page_opened else None,
+                            "steps": step,
+                        }
+
                     verified_flag = verify_attempts > 0 and passed
                     return {
                         "success": True,
                         "verified": verified_flag,
+                        "state": "VERIFIED" if verified_flag else "COMPLETED",
                         "summary": reason,
                         "url": page.url if page_opened else None,
                         "steps": step,
@@ -844,6 +1095,11 @@ def _run_computer_workflow(
                     _validate_url(url)
                     opened = browser_open(page, url)
                     page_opened = bool(opened.get("success"))
+                    if not page_opened:
+                        error_msg = opened.get("error", f"Failed to open {url}")
+                        observation_text = f"browser_open failed: {error_msg}\nPLAN:\n{plan_text}"
+                        last_action = "browser_open_failed"
+                        continue
                     last_action = "browser_open"
                     page_read = False
                     _emit(
@@ -881,18 +1137,46 @@ def _run_computer_workflow(
                     page_read = True
                     last_action = "browser_read"
 
+                    page_read_data = {
+                        "title": observation.get("title", ""),
+                        "url": page.url,
+                    }
+                    if observation.get("elements"):
+                        page_read_data["elements"] = observation["elements"]
                     _emit(
                         emit,
                         TaskEventType.PAGE_READ,
                         TaskStatus.RUNNING,
                         "Page content was read safely.",
-                        {
-                            "title": observation.get("title", ""),
-                            "url": page.url,
-                        },
+                        page_read_data,
                     )
 
-                    observation_text = str(safe_observation(observation))
+                    observation_text = f"{safe_observation(observation)}\n\nPLAN:\n{plan_text}"
+
+                    dom_is_verif, dom_matches, dom_obs_text, dom_exp_text, dom_target_sel = _inspect_and_verify_result(
+                        task_request.task, observation, page
+                    )
+                    if dom_is_verif and dom_matches and clicked_selectors:
+                        feedback = f"Observed {dom_target_sel} matches expected text: '{dom_obs_text}'."
+                        _emit(
+                            emit,
+                            TaskEventType.THINKING,
+                            TaskStatus.RUNNING,
+                            f"Verification passed: {feedback}",
+                            {"verified": True, "selector": dom_target_sel, "value": dom_obs_text},
+                        )
+                        return {
+                            "success": True,
+                            "verified": True,
+                            "state": "VERIFIED",
+                            "summary": f"Observed {dom_target_sel} with text: '{dom_obs_text}'. Task verified successfully.",
+                            "url": page.url,
+                            "steps": step,
+                            "result": {
+                                "selector": dom_target_sel,
+                                "text": dom_obs_text,
+                            },
+                        }
 
                     # Deterministically finish simple information requests.
                     if _simple_read_task_completed(task_request.task, observation):
@@ -956,12 +1240,59 @@ def _run_computer_workflow(
                     target = _observed_target(observation, selector, ("buttons", "links"))
                     if target is None:
                         raise ValueError("Click rejected: target is not an observed control.")
+                    effective_selector = target.get("selector") or selector
+                    target_id = target.get("id", "")
+                    already_clicked = (
+                        effective_selector in clicked_selectors
+                        or selector in clicked_selectors
+                        or (target_id and (target_id in clicked_selectors or f"#{target_id}" in clicked_selectors))
+                    )
+                    if already_clicked:
+                        # Do not repeat a successful click unnecessarily.
+                        observation = _read_page_safely(page)
+                        page_read = True
+                        dom_is_verif, dom_matches, dom_obs_text, dom_exp_text, dom_target_sel = _inspect_and_verify_result(
+                            task_request.task, observation, page
+                        )
+                        if dom_is_verif and dom_matches:
+                            feedback = f"Observed {effective_selector} was already clicked and {dom_target_sel} with '{dom_obs_text}' verified in DOM."
+                            _emit(
+                                emit,
+                                TaskEventType.THINKING,
+                                TaskStatus.RUNNING,
+                                f"Verification passed: {feedback}",
+                                {"verified": True, "selector": dom_target_sel, "value": dom_obs_text},
+                            )
+                            return {
+                                "success": True,
+                                "verified": True,
+                                "state": "VERIFIED",
+                                "summary": f"Observed {dom_target_sel} with text: '{dom_obs_text}'. Task verified successfully.",
+                                "url": page.url,
+                                "steps": step,
+                                "result": {"selector": dom_target_sel, "text": dom_obs_text},
+                            }
+
+                        _emit(
+                            emit,
+                            TaskEventType.THINKING,
+                            TaskStatus.RUNNING,
+                            f"Repeated click blocked: '{effective_selector}' has already been clicked.",
+                            {"action": "browser_click", "selector": effective_selector},
+                        )
+                        obs_note = f"NOTE: The control '{effective_selector}' has already been clicked successfully. Do NOT click it again."
+                        if dom_is_verif and not dom_matches:
+                            obs_note += f" Actual observation: {dom_target_sel} is '{dom_obs_text}', expected '{dom_exp_text}'."
+                        observation_text = f"{safe_observation(observation)}\n\n{obs_note}\nPLAN:\n{plan_text}"
+                        last_action = "repeated_click_blocked"
+                        continue
+
                     if _is_approval_required(action_name, target):
                         if approval_gate is None or not task_request.require_confirmation:
                             raise ValueError("Click rejected: sensitive target requires user approval.")
                         action_snapshot = sanitize_event_data({
                             "action": "browser_click",
-                            "selector": selector,
+                            "selector": effective_selector,
                             "target_text": target.get("text", ""),
                             "target_type": target.get("type", ""),
                         })
@@ -995,13 +1326,86 @@ def _run_computer_workflow(
                             }
                         _emit(emit, TaskEventType.APPROVAL_GRANTED, TaskStatus.RUNNING,
                               "User approved the sensitive click action.")
-                    _emit(emit, TaskEventType.EXECUTING, TaskStatus.RUNNING, "Clicking an observed control.")
-                    outcome = browser_click(page, selector)
+                    _emit(
+                        emit,
+                        TaskEventType.EXECUTING,
+                        TaskStatus.RUNNING,
+                        f"Clicking observed control {effective_selector}.",
+                        {"action": "browser_click", "selector": effective_selector},
+                    )
+                    outcome = browser_click(page, effective_selector)
                     if not outcome.get("success"):
                         raise RuntimeError(outcome.get("error", "Browser click failed."))
-                    page_read = False
+
+                    clicked_selectors.add(effective_selector)
+                    clicked_selectors.add(selector)
+                    if target_id:
+                        clicked_selectors.add(target_id)
+                        clicked_selectors.add(f"#{target_id}")
+
+                    # After clicking, read the current DOM again immediately
+                    _emit(
+                        emit,
+                        TaskEventType.BROWSER_READING,
+                        TaskStatus.RUNNING,
+                        "Reading visible page content after click.",
+                    )
+                    observation = _read_page_safely(page)
+                    page_read = True
                     last_action = "browser_click"
-                    observation_text = f"Clicked observed control. URL: {page.url}. Read the page to verify."
+
+                    page_read_data = {
+                        "title": observation.get("title", ""),
+                        "url": page.url,
+                    }
+                    if observation.get("elements"):
+                        page_read_data["elements"] = observation["elements"]
+                    _emit(
+                        emit,
+                        TaskEventType.PAGE_READ,
+                        TaskStatus.RUNNING,
+                        "Page content was read safely.",
+                        page_read_data,
+                    )
+
+                    observation_text = f"{safe_observation(observation)}\n\nPLAN:\n{plan_text}"
+
+                    # Inspect DOM and check verification
+                    dom_is_verif, dom_matches, dom_obs_text, dom_exp_text, dom_target_sel = _inspect_and_verify_result(
+                        task_request.task, observation, page
+                    )
+                    if dom_is_verif:
+                        if dom_matches:
+                            feedback = f"Observed {dom_target_sel} matches expected text: '{dom_obs_text}'."
+                            _emit(
+                                emit,
+                                TaskEventType.THINKING,
+                                TaskStatus.RUNNING,
+                                f"Verification passed: {feedback}",
+                                {"verified": True, "selector": dom_target_sel, "value": dom_obs_text},
+                            )
+                            return {
+                                "success": True,
+                                "verified": True,
+                                "state": "VERIFIED",
+                                "summary": f"Observed {dom_target_sel} with text: '{dom_obs_text}'. Task verified successfully.",
+                                "url": page.url,
+                                "steps": step,
+                                "result": {
+                                    "selector": dom_target_sel,
+                                    "text": dom_obs_text,
+                                },
+                            }
+                        else:
+                            obs_msg = f"Observed {dom_target_sel} text is '{dom_obs_text}' (expected '{dom_exp_text}')."
+                            _emit(
+                                emit,
+                                TaskEventType.THINKING,
+                                TaskStatus.RUNNING,
+                                f"Verification pending: {obs_msg}",
+                                {"selector": dom_target_sel, "observed": dom_obs_text, "expected": dom_exp_text},
+                            )
+                            observation_text = f"{safe_observation(observation)}\n\nACTUAL OBSERVATION:\n{obs_msg}\nPLAN:\n{plan_text}"
                 elif action_name == "browser_type":
                     observation = _read_page_safely(page)
                     selector = action.get("selector", "")
@@ -1011,12 +1415,23 @@ def _run_computer_workflow(
                     text = str(action.get("text", ""))
                     if not text:
                         raise ValueError("The browser_type action did not include text.")
+                    effective_selector = target.get("selector") or selector
+                    if target.get("value") == text:
+                        observation_text = (
+                            f"{safe_observation(observation)}\n\n"
+                            f"NOTE: The field '{effective_selector}' already contains the required text '{text}'.\n"
+                            "Do NOT type into it again.\n"
+                            "Choose an observed button to click (for example from the buttons list above) or finish the task.\n\n"
+                            f"PLAN:\n{plan_text}"
+                        )
+                        last_action = "browser_type_already_filled"
+                        continue
                     if _is_approval_required(action_name, target):
                         if approval_gate is None or not task_request.require_confirmation:
                             raise ValueError("Typing rejected: sensitive target requires user approval.")
                         action_snapshot = sanitize_event_data({
                             "action": "browser_type",
-                            "selector": selector,
+                            "selector": effective_selector,
                             "target_type": target.get("type", ""),
                             "target_placeholder": target.get("placeholder", ""),
                             # Never include the text value for sensitive fields.
@@ -1050,13 +1465,19 @@ def _run_computer_workflow(
                             }
                         _emit(emit, TaskEventType.APPROVAL_GRANTED, TaskStatus.RUNNING,
                               "User approved the sensitive type action.")
-                    _emit(emit, TaskEventType.EXECUTING, TaskStatus.RUNNING, "Entering text into an observed field.")
-                    outcome = browser_type(page, selector, text)
+                    _emit(
+                        emit,
+                        TaskEventType.EXECUTING,
+                        TaskStatus.RUNNING,
+                        f"Entering text into {effective_selector}.",
+                        {"action": "browser_type", "selector": effective_selector},
+                    )
+                    outcome = browser_type(page, effective_selector, text)
                     if not outcome.get("success"):
                         raise RuntimeError(outcome.get("error", "Browser typing failed."))
                     page_read = False
                     last_action = "browser_type"
-                    observation_text = "Text entered. Read the page to verify; do not submit forms."
+                    observation_text = f"Text entered into {effective_selector}. Read the page to verify; do not submit forms.\nPLAN:\n{plan_text}"
                 elif action_name == "browser_scroll":
                     if not page_opened:
                         raise ValueError("Cannot scroll before opening a webpage.")
@@ -1093,6 +1514,13 @@ def _run_computer_workflow(
                     last_action = "browser_screenshot"
                     observation_text = sanitize_event_text(outcome.get("message", "Screenshot captured."))
                 else:
+                    _emit(
+                        emit,
+                        TaskEventType.THINKING,
+                        TaskStatus.RUNNING,
+                        f"Unsupported or unsafe action: '{sanitize_event_text(action_name)}'.",
+                        {"action": action_name},
+                    )
                     observation_text = f"Unsupported or unsafe action: {sanitize_event_text(action_name)}. Choose a safe available action or finish."
                     last_action = "action_failed"
                     continue

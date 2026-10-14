@@ -1,60 +1,29 @@
 <!DOCTYPE html>
-<html>
-
+<html lang="en">
 <head>
-    <title>AI Agent Test</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent Test Page</title>
 </head>
-
 <body>
+    <h1>AI Agent Browser Test</h1>
 
-    <h1>AI Computer Agent Test</h1>
+    <p>Use this page to test browser interaction.</p>
 
-    <p>Enter your name:</p>
+    <label for="name">Enter your name:</label>
+    <input type="text" id="name" placeholder="Enter name">
 
-    <input
-        id="name"
-        type="text"
-        placeholder="Enter your name"
-    >
+    <button id="showName" type="button">Show Name</button>
 
-    <button
-        id="submit"
-        onclick="showMessage()"
-    >
-        Submit
-    </button>
-
-    <h2 id="result"></h2>
+    <p id="result"></p>
 
     <script>
+        document.getElementById("showName").addEventListener("click", () => {
+            const name = document.getElementById("name").value.trim();
 
-        const nameInput = document.getElementById("name");
-        const result = document.getElementById("result");
-
-        nameInput.addEventListener("keydown", function(event) {
-            if (event.key === "Enter") {
-                result.innerText = "ENTER PRESSED";
-            }
-            if (event.key === "Escape") {
-                result.innerText = "ESC PRESSED";
-            }
-            if (event.key === "ArrowDown") {
-                result.innerText = "ARROW DOWN";
-            }
+            document.getElementById("result").textContent =
+                name ? `Hello, ${name}!` : "Please enter your name.";
         });
-
-        function showMessage() {
-
-            const name =
-                document.getElementById("name").value;
-
-            document.getElementById("result").innerText =
-                "Hello " + name + "!";
-
-        }
-
     </script>
-
 </body>
-
 </html>

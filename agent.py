@@ -18,7 +18,21 @@ from browser_tools import (
 # CONFIGURATION
 # ============================================================
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+def _safe_print(*args, **kwargs):
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        try:
+            safe_args = [
+                arg.encode("ascii", errors="replace").decode("ascii") if isinstance(arg, str) else arg
+                for arg in args
+            ]
+            print(*safe_args, **kwargs)
+        except Exception:
+            pass
+
+
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 MODEL = "qwen3:4b"
 
 MAX_STEPS = 15
@@ -113,26 +127,26 @@ def ask_ai(prompt, max_tokens=400):
                 ""
             ).strip()
 
-            print(
+            _safe_print(
                 f"\n📡 Ollama response length: {len(result)}"
             )
 
             if result:
                 return result
 
-            print(
+            _safe_print(
                 f"\n⚠️ Empty AI response "
                 f"(attempt {attempt}/3)"
             )
 
         except Exception as e:
 
-            print(
+            _safe_print(
                 f"\n⚠️ Ollama error "
                 f"(attempt {attempt}/3):"
             )
 
-            print(e)
+            _safe_print(e)
 
     raise RuntimeError(
         "Ollama failed to return a response."
@@ -144,45 +158,60 @@ def ask_ai(prompt, max_tokens=400):
 # ============================================================
 
 def extract_json(text):
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("AI returned an empty response.")
 
     text = text.strip()
 
-    start = text.find("{")
-    end = text.rfind("}") + 1
-
-    if start == -1 or end <= start:
-
-        raise ValueError(
-            "AI did not return JSON.\n\n"
-            f"AI response:\n{text}"
-        )
-
-    json_text = text[start:end]
-
+    # First, try parsing the complete response.
     try:
+        action = json.loads(text)
+    except json.JSONDecodeError:
+        action = None
 
-        action = json.loads(
-            json_text
-        )
+    if action is None:
+        # Handle a response containing a JSON code fence.
+        cleaned = text
 
-    except json.JSONDecodeError as e:
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
 
-        raise ValueError(
-            f"Invalid JSON from AI:\n"
-            f"{json_text}\n\n"
-            f"Error: {e}"
-        )
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+
+            cleaned = "\n".join(lines).strip()
+
+        try:
+            action = json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Last resort: decode one JSON object from the response.
+            decoder = json.JSONDecoder()
+            action = None
+
+            for index, character in enumerate(cleaned):
+                if character != "{":
+                    continue
+
+                try:
+                    candidate, _ = decoder.raw_decode(cleaned[index:])
+                except json.JSONDecodeError:
+                    continue
+
+                if isinstance(candidate, dict):
+                    action = candidate
+                    break
 
     if not isinstance(action, dict):
-
         raise ValueError(
-            "AI response is not a JSON object."
+            f"AI response does not contain a valid JSON object: {text[:500]}"
         )
 
-    if "action" not in action:
-
+    if not isinstance(action.get("action"), str):
         raise ValueError(
-            "AI response does not contain 'action'."
+            "AI JSON must contain an 'action' string."
         )
 
     return action
@@ -712,6 +741,8 @@ when verification is needed.
 
 RULE 15:
 Do not repeat an action unnecessarily.
+Never click a button or link that has already been clicked.
+If an action has already been performed and the expected result is visible in the observation, use finish.
 
 RULE 16:
 Do not scroll repeatedly in a row.

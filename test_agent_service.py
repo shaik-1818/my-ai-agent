@@ -1489,15 +1489,12 @@ class AgentServiceTests(unittest.TestCase):
         executed = []
 
         def fake_workflow(task_request, emit, ask_model, approval_gate=None):
-            # Simulate: model returns an unsupported action, then a sensitive click.
-            # The unsupported action must not execute anything sensitive.
             action_name = "fly_to_moon"
             if action_name not in {
                 "browser_open", "browser_read", "browser_click",
                 "browser_type", "browser_scroll", "browser_press",
                 "browser_screenshot", "finish",
             }:
-                # Correctly handled: no execution, no gate bypass
                 pass
             else:
                 executed.append(action_name)
@@ -1515,6 +1512,330 @@ class AgentServiceTests(unittest.TestCase):
 
         self.assertEqual(executed, [], "Unsupported action must not execute anything")
         self.assertTrue(result.success)
+
+    def test_browser_open_returns_failure_dict_on_connection_refused(self):
+        """browser_open must return success=False dict rather than raising an uncaught exception on connection failure."""
+        from unittest.mock import MagicMock
+        from browser_tools import browser_open
+
+        mock_page = MagicMock()
+        mock_page.goto.side_effect = Exception("net::ERR_CONNECTION_REFUSED at http://127.0.0.1:9999")
+        mock_page.url = "http://127.0.0.1:9999"
+
+        res = browser_open(mock_page, "http://127.0.0.1:9999", retries=2, retry_delay=0.01)
+        self.assertFalse(res["success"])
+        self.assertIn("ERR_CONNECTION_REFUSED", res["error"])
+        self.assertEqual(mock_page.goto.call_count, 2)
+
+    def test_browser_open_ipv4_fallback_for_localhost(self):
+        """browser_open should fall back from localhost to 127.0.0.1 when connection is refused."""
+        from unittest.mock import MagicMock
+        from browser_tools import browser_open
+
+        mock_page = MagicMock()
+        call_urls = []
+
+        def fake_goto(url, **kwargs):
+            call_urls.append(url)
+            if "localhost" in url:
+                raise Exception("net::ERR_CONNECTION_REFUSED")
+            mock_page.url = url
+            mock_page.title.return_value = "Test Title"
+            return None
+
+        mock_page.goto.side_effect = fake_goto
+        res = browser_open(mock_page, "http://localhost:8001/test_page.html", retries=2, retry_delay=0.01)
+        self.assertTrue(res["success"])
+        self.assertIn("127.0.0.1", res["url"])
+        self.assertIn("http://127.0.0.1:8001/test_page.html", call_urls)
+
+    def test_observed_target_finds_by_id_and_single_candidate(self):
+        """_observed_target correctly resolves targets by id, text, and single candidate fallback."""
+        from agent_service import _observed_target
+
+        obs = {
+            "buttons": [
+                {
+                    "tag": "button",
+                    "selector": "#showName",
+                    "id": "showName",
+                    "name": "",
+                    "type": "button",
+                    "text": "Show Name",
+                }
+            ],
+            "links": [],
+        }
+
+        # Exact match
+        t1 = _observed_target(obs, "#showName", ("buttons", "links"))
+        self.assertIsNotNone(t1)
+        self.assertEqual(t1["selector"], "#showName")
+
+        # Match by text
+        t2 = _observed_target(obs, "Show Name", ("buttons", "links"))
+        self.assertIsNotNone(t2)
+        self.assertEqual(t2["selector"], "#showName")
+
+        # Match by id without hash
+        t3 = _observed_target(obs, "showName", ("buttons", "links"))
+        self.assertIsNotNone(t3)
+        self.assertEqual(t3["selector"], "#showName")
+
+        # Single candidate fallback for buttons
+        t4 = _observed_target(obs, "#submit", ("buttons", "links"))
+        self.assertIsNotNone(t4)
+        self.assertEqual(t4["selector"], "#showName")
+
+    def test_navigation_alone_cannot_complete_when_interaction_requested(self):
+        """_simple_read_task_completed must return False when interaction (fill/click/verify) is requested."""
+        from agent_service import _simple_read_task_completed
+
+        obs = {"title": "Test Page", "body_text": "Sample page body text"}
+        interactive_tasks = [
+            "Open http://127.0.0.1:8001/test_page.html, enter Moula into the name input, click the Show Name button, and verify the result.",
+            "Open the page, fill #name with Moula, click #showName, and read the page",
+            "Fill #name with Moula and click #showName",
+            "Click the submit button and check result",
+            "Type Moula into #name and verify result",
+        ]
+        for t in interactive_tasks:
+            self.assertFalse(
+                _simple_read_task_completed(t, obs),
+                f"Task '{t}' should not be treated as a simple read-only task",
+            )
+
+    def test_failed_verification_returns_honest_failure_status(self):
+        """When task verification fails, the workflow must produce an honest failed status rather than success."""
+        from agent_service import _run_computer_workflow
+        from unittest.mock import MagicMock, patch
+
+        mock_page = MagicMock()
+        mock_page.url = "http://127.0.0.1:8001/test_page.html"
+        mock_page.title.return_value = "AI Agent Test Page"
+
+        events = []
+        def emit(event_type, status, message, data=None):
+            events.append((event_type, status, message, data))
+
+        # Model tries to finish immediately without verifying completion
+        def mock_ask_model(prompt):
+            if "verify" in prompt.lower() or "verifier" in prompt.lower():
+                return '{"passed": false, "reason": "No evidence that #result was populated."}'
+            if "plan" in prompt.lower():
+                return '{"steps": ["Open page", "Fill name", "Click button", "Verify"]}'
+            return '{"action": "finish", "reason": "Claiming task is done."}'
+
+        req = TaskRequest(
+            task="Open http://127.0.0.1:8001/test_page.html, fill #name with Moula, click #showName, and verify result",
+            task_type="computer",
+            url="http://127.0.0.1:8001/test_page.html",
+        )
+
+        with patch("playwright.sync_api.sync_playwright") as mock_pw, \
+             patch("browser_tools.browser_open", return_value={"success": True, "url": req.url, "title": "Test"}), \
+             patch("agent_service._read_page_safely", return_value={"title": "Test", "body_text": "Empty", "buttons": [], "inputs": []}):
+            mock_pw_ctx = MagicMock()
+            mock_pw.return_value.__enter__.return_value = mock_pw_ctx
+            mock_browser = MagicMock()
+            mock_pw_ctx.chromium.launch.return_value = mock_browser
+            mock_browser.new_page.return_value = mock_page
+
+            res = _run_computer_workflow(req, emit, mock_ask_model)
+
+            # Verification failed, so success MUST be False and verified MUST be False
+            self.assertFalse(res["success"], "Workflow must return success=False when verification fails")
+            self.assertFalse(res["verified"], "Workflow must return verified=False when verification fails")
+            self.assertEqual(res["state"], "FAILED")
+
+    def test_repeated_click_is_blocked_and_does_not_repeat_click(self):
+        """When model repeatedly proposes clicking #showName, workflow blocks repeated click and prevents infinite click loop."""
+        from agent_service import _run_computer_workflow
+        from unittest.mock import MagicMock, patch
+
+        mock_page = MagicMock()
+        mock_page.url = "http://127.0.0.1:8001/test_page.html"
+        mock_page.title.return_value = "AI Agent Test Page"
+
+        events = []
+        def emit(event_type, status, message, data=None):
+            events.append((event_type, status, message, data))
+
+        step_counter = [0]
+        def mock_ask_model(prompt):
+            if "plan" in prompt.lower():
+                return '{"steps": ["Open page", "Click button", "Verify"]}'
+            step_counter[0] += 1
+            if step_counter[0] == 1:
+                return '{"action": "browser_click", "selector": "#showName"}'
+            elif step_counter[0] == 2:
+                return '{"action": "browser_click", "selector": "#showName"}'
+            else:
+                return '{"action": "finish", "reason": "Done"}'
+
+        req = TaskRequest(
+            task="Click #showName and verify that #result equals Hello, Moula!",
+            task_type="computer",
+            url="http://127.0.0.1:8001/test_page.html",
+        )
+
+        obs = {
+            "title": "AI Agent Test Page",
+            "body_text": "Sample",
+            "buttons": [{"tag": "button", "selector": "#showName", "id": "showName", "text": "Show Name"}],
+            "inputs": [],
+            "elements": [{"id": "result", "selector": "#result", "text": "Hello, Moula!"}],
+        }
+
+        with patch("playwright.sync_api.sync_playwright") as mock_pw, \
+             patch("browser_tools.browser_open", return_value={"success": True, "url": req.url, "title": "Test"}), \
+             patch("agent_service._read_page_safely", return_value=obs), \
+             patch("browser_tools.browser_click", return_value={"success": True, "url": req.url}) as mock_b_click:
+            mock_pw_ctx = MagicMock()
+            mock_pw.return_value.__enter__.return_value = mock_pw_ctx
+            mock_browser = MagicMock()
+            mock_pw_ctx.chromium.launch.return_value = mock_browser
+            mock_browser.new_page.return_value = mock_page
+
+            res = _run_computer_workflow(req, emit, mock_ask_model)
+
+            # browser_click must only be called ONCE, not twice
+            self.assertEqual(mock_b_click.call_count, 1)
+            self.assertTrue(res["success"])
+            self.assertTrue(res["verified"])
+            self.assertEqual(res["state"], "VERIFIED")
+
+    def test_complete_browser_workflow_executes_actions_and_verifies_dom(self):
+        """Test complete workflow with mocked actions: fill #name -> click #showName -> DOM read -> verified."""
+        from agent_service import _run_computer_workflow
+        from unittest.mock import MagicMock, patch
+
+        mock_page = MagicMock()
+        mock_page.url = "http://127.0.0.1:8001/test_page.html"
+        mock_page.title.return_value = "AI Agent Test Page"
+
+        events = []
+        def emit(event_type, status, message, data=None):
+            events.append((event_type, status, message, data))
+
+        step_counter = [0]
+        def mock_ask_model(prompt):
+            if "plan" in prompt.lower():
+                return '{"steps": ["Open page", "Fill name", "Click showName", "Verify result"]}'
+            step_counter[0] += 1
+            if step_counter[0] == 1:
+                return '{"action": "browser_type", "selector": "#name", "text": "Moula"}'
+            elif step_counter[0] == 2:
+                return '{"action": "browser_click", "selector": "#showName"}'
+            return '{"action": "finish", "reason": "Task completed."}'
+
+        req = TaskRequest(
+            task="Open http://127.0.0.1:8001/test_page.html, fill #name with Moula, click #showName, read #result, and verify Hello, Moula!",
+            task_type="computer",
+            url="http://127.0.0.1:8001/test_page.html",
+        )
+
+        obs_initial = {
+            "title": "AI Agent Test Page",
+            "body_text": "Enter name:",
+            "buttons": [{"tag": "button", "selector": "#showName", "id": "showName", "text": "Show Name"}],
+            "inputs": [{"tag": "input", "selector": "#name", "id": "name", "value": ""}],
+            "elements": [{"id": "result", "selector": "#result", "text": ""}],
+        }
+        obs_after_type = {
+            "title": "AI Agent Test Page",
+            "body_text": "Enter name: Moula",
+            "buttons": [{"tag": "button", "selector": "#showName", "id": "showName", "text": "Show Name"}],
+            "inputs": [{"tag": "input", "selector": "#name", "id": "name", "value": "Moula"}],
+            "elements": [{"id": "result", "selector": "#result", "text": ""}],
+        }
+        obs_after_click = {
+            "title": "AI Agent Test Page",
+            "body_text": "Enter name: Moula\nHello, Moula!",
+            "buttons": [{"tag": "button", "selector": "#showName", "id": "showName", "text": "Show Name"}],
+            "inputs": [{"tag": "input", "selector": "#name", "id": "name", "value": "Moula"}],
+            "elements": [{"id": "result", "selector": "#result", "text": "Hello, Moula!"}],
+        }
+
+        read_responses = [obs_initial, obs_after_type, obs_after_click, obs_after_click]
+
+        with patch("playwright.sync_api.sync_playwright") as mock_pw, \
+             patch("browser_tools.browser_open", return_value={"success": True, "url": req.url, "title": "Test"}), \
+             patch("agent_service._read_page_safely", side_effect=read_responses), \
+             patch("browser_tools.browser_type", return_value={"success": True}) as mock_type, \
+             patch("browser_tools.browser_click", return_value={"success": True, "url": req.url}) as mock_click:
+            mock_pw_ctx = MagicMock()
+            mock_pw.return_value.__enter__.return_value = mock_pw_ctx
+            mock_browser = MagicMock()
+            mock_pw_ctx.chromium.launch.return_value = mock_browser
+            mock_browser.new_page.return_value = mock_page
+
+            res = _run_computer_workflow(req, emit, mock_ask_model)
+
+            self.assertTrue(res["success"])
+            self.assertTrue(res["verified"])
+            self.assertEqual(res["state"], "VERIFIED")
+            self.assertEqual(res["result"]["text"], "Hello, Moula!")
+            mock_type.assert_called_once_with(mock_page, "#name", "Moula")
+            mock_click.assert_called_once_with(mock_page, "#showName")
+
+            # Check that verification event was emitted
+            verif_events = [e for e in events if e[0] == TaskEventType.THINKING and e[3] and e[3].get("verified")]
+            self.assertTrue(len(verif_events) > 0)
+
+    def test_dom_verification_reports_actual_observation_when_result_differs(self):
+        """When #result in DOM has wrong text, task reports actual observation and does not claim verification."""
+        from agent_service import _run_computer_workflow
+        from unittest.mock import MagicMock, patch
+
+        mock_page = MagicMock()
+        mock_page.url = "http://127.0.0.1:8001/test_page.html"
+        mock_page.title.return_value = "AI Agent Test Page"
+
+        events = []
+        def emit(event_type, status, message, data=None):
+            events.append((event_type, status, message, data))
+
+        step_counter = [0]
+        def mock_ask_model(prompt):
+            if "plan" in prompt.lower():
+                return '{"steps": ["Open page", "Click button", "Finish"]}'
+            step_counter[0] += 1
+            if step_counter[0] == 1:
+                return '{"action": "browser_click", "selector": "#showName"}'
+            return '{"action": "finish", "reason": "Claiming done."}'
+
+        req = TaskRequest(
+            task="Open http://127.0.0.1:8001/test_page.html, click #showName, read #result, and verify Hello, Moula!",
+            task_type="computer",
+            url="http://127.0.0.1:8001/test_page.html",
+        )
+
+        # DOM produces unexpected result: "Please enter your name."
+        obs_wrong = {
+            "title": "AI Agent Test Page",
+            "body_text": "Please enter your name.",
+            "buttons": [{"tag": "button", "selector": "#showName", "id": "showName", "text": "Show Name"}],
+            "inputs": [],
+            "elements": [{"id": "result", "selector": "#result", "text": "Please enter your name."}],
+        }
+
+        with patch("playwright.sync_api.sync_playwright") as mock_pw, \
+             patch("browser_tools.browser_open", return_value={"success": True, "url": req.url, "title": "Test"}), \
+             patch("agent_service._read_page_safely", return_value=obs_wrong), \
+             patch("browser_tools.browser_click", return_value={"success": True, "url": req.url}):
+            mock_pw_ctx = MagicMock()
+            mock_pw.return_value.__enter__.return_value = mock_pw_ctx
+            mock_browser = MagicMock()
+            mock_pw_ctx.chromium.launch.return_value = mock_browser
+            mock_browser.new_page.return_value = mock_page
+
+            res = _run_computer_workflow(req, emit, mock_ask_model)
+
+            self.assertFalse(res["verified"])
+            self.assertFalse(res["success"])
+            self.assertEqual(res["state"], "FAILED")
+            self.assertIn("Please enter your name.", res["summary"])
 
 
 if __name__ == "__main__":

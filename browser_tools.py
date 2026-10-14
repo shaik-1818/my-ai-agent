@@ -9,6 +9,16 @@ def _clean(value):
     return (value or "").strip()
 
 
+def _safe_print(text):
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        try:
+            print(text.encode("ascii", errors="replace").decode("ascii"))
+        except Exception:
+            pass
+
+
 def _selector_for_element(element, fallback_tag="input"):
     if element is None:
         return fallback_tag
@@ -53,13 +63,23 @@ def _build_element(tag, element, fallback_tag=None):
         "text": text,
     }
 
-    if tag_name == "textarea":
-        details["value"] = _clean(element.input_value())
-        if not text:
+    if tag_name in {"input", "textarea"}:
+        try:
+            val = _clean(element.input_value())
+            if val:
+                details["value"] = val
+                if not text:
+                    details["text"] = val
+        except Exception:
+            pass
+        if not text and tag_name == "textarea":
             details["text"] = details["value"]
 
     if tag_name == "select":
-        details["value"] = _clean(element.input_value())
+        try:
+            details["value"] = _clean(element.input_value())
+        except Exception:
+            pass
 
     if tag_name == "a":
         details["href"] = _clean(element.get_attribute("href"))
@@ -67,25 +87,56 @@ def _build_element(tag, element, fallback_tag=None):
     return details
 
 
-def browser_open(page: Page, url: str):
+def browser_open(page: Page, url: str, retries: int = 3, retry_delay: float = 0.5):
+    _safe_print(f"\n🌐 Opening: {url}")
 
-    print(f"\n🌐 Opening: {url}")
+    last_error = None
+    target_url = url
+    max_attempts = max(1, retries)
 
-    page.goto(
-        url,
-        wait_until="domcontentloaded"
-    )
+    for attempt in range(1, max_attempts + 1):
+        try:
+            page.goto(
+                target_url,
+                wait_until="domcontentloaded"
+            )
+            return {
+                "success": True,
+                "url": page.url,
+                "title": page.title()
+            }
+        except Exception as e:
+            last_error = e
+            err_msg = str(e).lower()
+            # If localhost connection was refused, try IPv4 loopback fallback
+            if "err_connection_refused" in err_msg and "://localhost" in target_url:
+                target_url = target_url.replace("://localhost", "://127.0.0.1", 1)
+                try:
+                    page.goto(target_url, wait_until="domcontentloaded")
+                    return {
+                        "success": True,
+                        "url": page.url,
+                        "title": page.title()
+                    }
+                except Exception as alt_err:
+                    last_error = alt_err
+
+            if ("err_connection_refused" in str(last_error).lower() or "connection refused" in str(last_error).lower()) and attempt < max_attempts:
+                import time
+                time.sleep(retry_delay)
+                continue
+            break
 
     return {
-        "success": True,
-        "url": page.url,
-        "title": page.title()
+        "success": False,
+        "error": str(last_error),
+        "url": getattr(page, "url", target_url)
     }
 
 
 def browser_read(page: Page):
 
-    print("\n📖 Reading webpage...")
+    _safe_print("\n📖 Reading webpage...")
 
     # Prefer the main content area over the entire webpage.
      # Extract the most relevant visible page content.
@@ -253,6 +304,23 @@ def browser_read(page: Page):
         element = radio_nodes.nth(i)
         radio_buttons.append(_build_element("radio", element, "input[type='radio']"))
 
+    dom_elements = []
+    try:
+        id_nodes = page.locator("[id]:not(button):not(input):not(textarea):not(select):not(a)")
+        for i in range(min(id_nodes.count(), 20)):
+            el = id_nodes.nth(i)
+            el_id = _clean(el.get_attribute("id"))
+            el_text = _clean(el.inner_text())
+            if el_id:
+                dom_elements.append({
+                    "id": el_id,
+                    "selector": f"#{el_id}",
+                    "tag": el.evaluate("node => node.tagName.toLowerCase()"),
+                    "text": el_text[:500],
+                })
+    except Exception:
+        pass
+
     interactive_elements = []
     for category in (links, buttons, inputs, editable_regions, selects, checkboxes, radio_buttons):
         interactive_elements.extend(category)
@@ -273,6 +341,8 @@ def browser_read(page: Page):
         "checkboxes": checkboxes,
         "radio_buttons": radio_buttons,
         "interactive_elements": interactive_elements[:40],
+        "elements": dom_elements,
+        "dom_elements": dom_elements,
     }
 
 
@@ -283,7 +353,7 @@ def browser_click(
 
     try:
 
-        print(
+        _safe_print(
             f"\n🖱️ Clicking: {selector}"
         )
 
@@ -315,7 +385,7 @@ def browser_type(
 
     try:
 
-        print(
+        _safe_print(
             f"\n⌨️ Typing into: {selector}"
         )
 
