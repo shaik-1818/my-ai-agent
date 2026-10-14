@@ -50,6 +50,7 @@ def real_online_coding_workflow(
     def transition(state):
         states.append(state)
         print(f"[STATE] {state}")
+
         event_name = {
             "OPENING": "browser_opening",
             "READING_PROBLEM": "reading_problem",
@@ -69,6 +70,7 @@ def real_online_coding_workflow(
             "FAILED": "failed",
             "MAX_CORRECTIONS_REACHED": "failed",
         }.get(state)
+
         if event_callback and event_name:
             event_callback(event_name)
 
@@ -82,7 +84,6 @@ def real_online_coding_workflow(
             "summary": summary,
             **details,
         }
-
     result = None
     run_clicked = False
     with sync_playwright() as playwright:
@@ -101,9 +102,20 @@ def real_online_coding_workflow(
                 if not observation.get("success"):
                     result = stop("FAILED", observation.get("error", "The problem page could not be read."))
                 else:
+                    # Include fresh visible DOM text before any model call; some observations
+                    # may omit or contain stale body text.
+                    try:
+                        visible_body = page.locator("body").inner_text(timeout=3000)
+                    except Exception:
+                        visible_body = ""
+                    if visible_body:
+                        observation = {**observation, "body_text": visible_body}
                     blocker = access_block_reason(observation)
+                    
+
                     if blocker:
                         result = stop("BLOCKED", blocker)
+
                     else:
                         transition("READING_PROBLEM")
                         details = read_coding_problem(_problem_observation(observation, page), ask_model)
@@ -197,35 +209,80 @@ def real_online_coding_workflow(
                                             )
                                         else:
                                             transition("FINDING_RUN_CONTROL")
-                                            run_control = find_run_control(page)
-                                            if not run_control.get("found"):
+                                            loop_result = None
+
+                                            # Recheck the page before allowing any Run/Test action.
+                                            latest_observation = browser_read(page)
+
+                                            if not latest_observation.get("success"):
                                                 result = stop(
                                                     "FAILED",
-                                                    run_control.get("reason", "Run/Test control was not found."),
+                                                    latest_observation.get(
+                                                        "error",
+                                                        "Could not recheck the page before running code.",
+                                                    ),
                                                     problem=details,
                                                     plan=plan,
                                                     editor=editor,
-                                                    run_control=run_control,
                                                 )
                                             else:
-                                                budget = OnlineExecutionBudget(
-                                                    max_executions=MAX_ONLINE_CORRECTION_EXECUTIONS,
-                                                    max_limit=MAX_ONLINE_TASK_EXECUTIONS,
-                                                )
-                                                loop_result = online_correction_loop(
-                                                    problem=problem,
-                                                    current_code=code,
-                                                    editor=editor,
-                                                    page=page,
-                                                    run_control=run_control,
-                                                    ask_model=ask_model,
-                                                    max_corrections=max_corrections,
-                                                    execution_budget=budget,
-                                                    result_wait_seconds=result_wait_seconds,
-                                                    state_callback=transition,
-                                                )
-                                                run_clicked = loop_result.get("run_clicked", False)
-                                                if (
+                                                try:
+                                                    visible_body = page.locator("body").inner_text(timeout=3000)
+                                                except Exception:
+                                                    visible_body = ""
+                                                if visible_body:
+                                                    latest_observation = {**latest_observation, "body_text": visible_body}
+                                                blocker = access_block_reason(latest_observation)
+
+                                                if blocker:
+                                                    result = stop(
+                                                        "BLOCKED",
+                                                        blocker,
+                                                        problem=details,
+                                                        plan=plan,
+                                                        editor=editor,
+                                                        run_clicked=False,
+                                                        submit_clicked=False,
+                                                    )
+                                                else:
+                                                    run_control = find_run_control(page)
+
+                                                    if not run_control.get("found"):
+                                                        result = stop(
+                                                            "FAILED",
+                                                            run_control.get(
+                                                                "reason",
+                                                                "Run/Test control was not found.",
+                                                            ),
+                                                            problem=details,
+                                                            plan=plan,
+                                                            editor=editor,
+                                                            run_control=run_control,
+                                                        )
+                                                    else:
+                                                        budget = OnlineExecutionBudget(
+                                                            max_executions=MAX_ONLINE_CORRECTION_EXECUTIONS,
+                                                            max_limit=MAX_ONLINE_TASK_EXECUTIONS,
+                                                        )
+
+                                                        loop_result = online_correction_loop(
+                                                            problem=problem,
+                                                            current_code=code,
+                                                            editor=editor,
+                                                            page=page,
+                                                            run_control=run_control,
+                                                            ask_model=ask_model,
+                                                            max_corrections=max_corrections,
+                                                            execution_budget=budget,
+                                                            result_wait_seconds=result_wait_seconds,
+                                                            state_callback=transition,
+                                                        )
+
+                                                        run_clicked = loop_result.get("run_clicked", False)
+
+                                                        
+                                                            
+                                                if loop_result is not None and (
                                                     loop_result.get("verified")
                                                     and loop_result.get("result", {}).get("status") == "passed"
                                                 ):
@@ -239,9 +296,14 @@ def real_online_coding_workflow(
                                                         "plan": plan,
                                                         "initial_code": code,
                                                     }
-                                                else:
+                                                elif loop_result is not None:
                                                     final_state = loop_result.get("state", "FAILED")
-                                                    if final_state not in {"FAILED", "BLOCKED", "LOGIN_REQUIRED", "MAX_CORRECTIONS_REACHED"}:
+
+                                                    # Normalize login-required results for the master workflow.
+                                                    if final_state == "LOGIN_REQUIRED":
+                                                        final_state = "BLOCKED"
+
+                                                    if final_state not in {"FAILED", "BLOCKED", "MAX_CORRECTIONS_REACHED"}:
                                                         final_state = "FAILED"
                                                     if not states or states[-1] != final_state:
                                                         transition(final_state)

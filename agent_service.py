@@ -348,8 +348,6 @@ def _simple_read_task_completed(user_task: str, observation: dict[str, Any]) -> 
         return bool(body)
 
     return False
-
-
 def _build_bullet_summary(body_text: str, n: int = 3) -> str:
     """Generate a concise, source-grounded webpage summary using Ollama."""
 
@@ -359,49 +357,74 @@ def _build_bullet_summary(body_text: str, n: int = 3) -> str:
     if not body_text or not body_text.strip():
         return "No readable webpage content was found."
 
-    from agent import ask_ai
+    # Validate the requested bullet count.
+    if n < 1:
+        return "The number of bullet points must be at least 1."
 
     # Normalize whitespace.
     text = re.sub(r"\s+", " ", body_text).strip()
 
-    if len(text) < 100:
-        return "Not enough webpage content was available to summarize."
+    # Short text is still useful content. Do not reject it just because
+    # it contains fewer than 100 characters.
+    if not text:
+        return "No readable webpage content was found."
 
-    # Limit input size to avoid overwhelming the local model.
+    # Handle short text without calling the AI model.
+    if len(text) < 100:
+        # Split the text into sentences.
+        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        # If there is only one sentence, return one bullet.
+        if len(sentences) <= 1:
+            sentence = text.strip()
+
+            if sentence and sentence[-1] not in ".!?":
+                sentence += "."
+
+            return f"• {sentence}"
+
+        # Produce up to n bullets, preserving all source sentences.
+        bullet_count = min(n, len(sentences))
+        groups = []
+        start = 0
+
+        for i in range(bullet_count):
+            remaining_sentences = len(sentences) - start
+            remaining_groups = bullet_count - i
+
+            # Distribute sentences across the remaining groups.
+            group_size = (
+                remaining_sentences + remaining_groups - 1
+            ) // remaining_groups
+
+            group = sentences[start:start + group_size]
+            groups.append(" ".join(group))
+            start += group_size
+
+        return "\n".join(f"• {group}" for group in groups)
+
+        # Limit input size to avoid overwhelming the local model.
     text = text[:7000]
+
+    from agent import ask_ai
 
     prompt = f"""
 You are an accurate webpage content analyst.
 
-GOAL:
-Identify and summarize the most important information in the webpage.
-
-USER REQUEST:
-Summarize this webpage in exactly {n} bullet points.
+TASK:
+Summarize the supplied webpage in exactly {n} bullet points.
 
 RULES:
-1. Read the entire supplied source text before deciding what matters.
-2. Identify the webpage's main topic and purpose.
-3. Prioritize the main article, documentation, tutorial, or explanation.
-4. Ignore navigation links, menus, headers, footers, and website promotions.
-5. Do not summarize the website or programming language in general
-   when the source contains a more specific topic.
-6. Each bullet must cover a different important fact or concept.
-7. Include relevant examples, instructions, or technical details when present.
-8. Every claim must be supported by the supplied source.
-9. Do not invent information or repeat the same idea.
-10. Use clear, simple English.
-11. Return exactly {n} bullet points.
-12. Return ONLY valid JSON using this format:
-    {{"bullets": ["First point", "Second point"]}}
-13. Every bullet must contain a complete sentence.
-14. Never end a bullet in the middle of an explanation.
-15. Finish every sentence with appropriate punctuation.
-16. Before returning, check that every bullet is complete and readable.
-17. If a bullet is incomplete, rewrite it using the supplied source text.
-
-If the source has insufficient information for one point, select
-another distinct, useful detail from the source.
+1. Use only information supported by the source text.
+2. Prioritize the main article, documentation, tutorial, or explanation.
+3. Ignore navigation menus, headers, footers, and promotions when possible.
+4. Each bullet must contain a distinct, useful fact.
+5. Use clear, simple English.
+6. Each bullet must be a complete sentence.
+7. Do not invent facts or repeat ideas.
+8. Return ONLY valid JSON in this format:
+   {{"bullets": ["First complete sentence.", "Second complete sentence."]}}
 
 SOURCE TEXT:
 {text}
@@ -428,33 +451,43 @@ SOURCE TEXT:
             if not isinstance(item, str):
                 continue
 
-            bullet = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", item)
-            bullet = bullet.strip()
+            bullet = re.sub(
+                r"^\s*(?:[-*•]|\d+[.)])\s*",
+                "",
+                item,
+            ).strip()
 
             if bullet:
                 cleaned_bullets.append(bullet)
 
         if len(cleaned_bullets) != n:
             raise ValueError(
-                f"Expected {n} bullet points, received {len(cleaned_bullets)}."
+                f"Expected {n} bullet points, "
+                f"received {len(cleaned_bullets)}."
             )
 
-        # Reject duplicate or nearly empty bullet points.
+        # Reject very short bullets.
         if any(len(bullet) < 20 for bullet in cleaned_bullets):
-            raise ValueError("A bullet point is too short to be useful.")
+            raise ValueError(
+                "A bullet point is too short to be useful."
+            )
 
+        # Reject duplicate bullets.
         normalized = [
             re.sub(r"\W+", " ", bullet.lower()).strip()
             for bullet in cleaned_bullets
         ]
 
         if len(set(normalized)) != len(normalized):
-            raise ValueError("The model returned duplicate bullet points.")
-        # Reject bullet points that appear to be incomplete.
+            raise ValueError(
+                "The model returned duplicate bullet points."
+            )
+
+        # Reject bullets that clearly end mid-explanation.
         incomplete_endings = (
             " the", " a", " an", " and", " or", " to", " of",
             " for", " with", " by", " if", " when", " because",
-            " which", " that", " such as", " including", " only if"
+            " which", " that", " such as", " including",
         )
 
         for bullet in cleaned_bullets:
@@ -462,21 +495,16 @@ SOURCE TEXT:
                 raise ValueError(
                     f"Incomplete bullet point detected: {bullet}"
                 )
-        
-        # Reject bullet points that appear to be incomplete.
-        # Reject bullet points that appear to be incomplete.
-        incomplete_endings = (
-            " the", " a", " an", " and", " or", " to", " of",
-            " for", " with", " by", " if", " when", " because",
-            " which", " that", " such as", " including", " only if"
-        )
 
-        for bullet in cleaned_bullets:
-            if bullet.lower().endswith(incomplete_endings):
-                raise ValueError(
-                    f"Incomplete bullet point detected: {bullet}"
-                )
-        return "\n".join(f"• {bullet}" for bullet in cleaned_bullets)
+        # Ensure sentence-ending punctuation.
+        cleaned_bullets = [
+            bullet if bullet.endswith((".", "!", "?")) else bullet + "."
+            for bullet in cleaned_bullets
+        ]
+
+        return "\n".join(
+            f"• {bullet}" for bullet in cleaned_bullets
+        )
 
     except Exception as exc:
         import traceback
@@ -487,9 +515,7 @@ SOURCE TEXT:
         traceback.print_exc()
         print("==============================================\n")
 
-        return (
-            f"Summary failed: {type(exc).__name__}: {exc}"
-        )
+        return f"Summary failed: {type(exc).__name__}: {exc}"
 
 def _plan_browser_task(task: str, url: str | None, ask_model) -> list[str]:
     """

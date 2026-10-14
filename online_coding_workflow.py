@@ -37,6 +37,7 @@ LOGIN_REQUIRED_PATTERNS = (
     re.compile(r"(?i)log in to continue"),
     re.compile(r"(?i)authentication required"),
     re.compile(r"(?i)login required"),
+    re.compile(r"(?i)you need to\s+(?:log\s*in|sign\s*in|login)\s*/\s*(?:sign\s*up|register)"),
     re.compile(r"(?i)\b(?:you need to\s+)?(?:log\s*in|sign\s*in|login|sign-in)\b.{0,120}\b(?:sign\s*up|run|submit)\b"),
     re.compile(r"(?i)\b(?:run|submit)\b.{0,120}\b(?:log\s*in|sign\s*in|login|sign-in)\b"),
 )
